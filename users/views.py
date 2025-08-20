@@ -52,6 +52,13 @@ otp_verifier = OTPVerificationService(user_repo)
 reset_request_service = PasswordResetRequestService(user_repo, email_sender)
 password_change_service = PasswordChangeService(user_repo, otp_verifier)
 
+# Custom permission class for OPTIONS requests
+class AllowOptionsPermission(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if request.method == 'OPTIONS':
+            return True
+        return super().has_permission(request, view)
+
 # --- Throttling Classes for Login ---
 class LoginAnonThrottle(AnonRateThrottle):
     rate = '10/min'
@@ -142,9 +149,18 @@ class UserViewSet(mixins.ListModelMixin,
         return super().retrieve(request, *args, **kwargs)
 
     def get_permissions(self):
+        """Allow OPTIONS requests without authentication for CORS preflight"""
+        if self.request.method == 'OPTIONS':
+            return [AllowOptionsPermission()]
         if self.action in ['create']:
             return [AllowAny()]
         return super().get_permissions()
+
+    def get_authentication_classes(self):
+        """Allow OPTIONS requests without authentication for CORS preflight"""
+        if self.request.method == 'OPTIONS':
+            return []
+        return super().get_authentication_classes()
 
     @extend_schema(
         parameters=[
@@ -481,6 +497,49 @@ class UserViewSet(mixins.ListModelMixin,
                 return Response({"error": error}, status=status.HTTP_404_NOT_FOUND)
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
         return Response({'message': 'User restored successfully.'}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        responses={
+            200: {
+                'description': 'List of all supplier users',
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'user_id': {'type': 'string', 'format': 'uuid'},
+                        'username': {'type': 'string'},
+                        'email': {'type': 'string'},
+                        'first_name': {'type': 'string'},
+                        'last_name': {'type': 'string'},
+                        'role': {'type': 'string'},
+                        'role_display': {'type': 'string'},
+                        'company_name': {'type': 'string'},
+                        'business_type': {'type': 'string'},
+                        'phone_number': {'type': 'string'},
+                        'address': {'type': 'string'},
+                        'is_verified': {'type': 'boolean'},
+                        'created_at': {'type': 'string', 'format': 'date-time'}
+                    }
+                }
+            }
+        },
+        tags=['Users'],
+        summary='Get all supplier users',
+        description='Get a list of all users with supplier roles (supplier and supplier_merchant). Accessible by anyone.'
+    )
+    @action(detail=False, methods=['get'], url_path='suppliers', permission_classes=[AllowAny])
+    def get_suppliers(self, request):
+        """Get all supplier users (supplier and supplier_merchant roles)"""
+        from .models import UserTypes
+        
+        suppliers = User.objects.filter(
+            role__in=[UserTypes.SUPPLIER, UserTypes.SUPPLIER_MERCHANT],
+            is_deleted=False,
+            is_active=True
+        ).order_by('-created_at')
+        
+        serializer = UserListSerializer(suppliers, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class PasswordResetViewSet(viewsets.ViewSet):
     """
